@@ -1,0 +1,27 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+
+# IDE / editor
+.DS_Store
+.vscode/
+*.swp
+*.swo
+
+# Python packaging / artifacts
+*.egg-info/
+dist/
+build/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Flask instance / local state
+instance/
