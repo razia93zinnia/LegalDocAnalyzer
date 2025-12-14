@@ -1,134 +1,82 @@
 from collections import Counter
 import re
+from flask import Flask, request, render_template, jsonify
 
-from flask import Flask, render_template, request
 
 app = Flask(__name__)
 
-# Basic keywords often seen as section headers in contracts.
-SECTION_KEYWORDS = [
-    "definitions",
-    "scope",
-    "term",
-    "termination",
-    "confidentiality",
-    "governing law",
-    "payment",
-    "liability",
-    "indemnification",
-    "representations",
-    "warranties",
-    "notices",
-    "dispute resolution",
-]
-
-# Quick stopword list to help the summarizer focus on informative words.
-STOPWORDS = {
-    "the",
-    "and",
-    "of",
-    "to",
-    "a",
-    "in",
-    "for",
-    "with",
-    "on",
-    "by",
-    "an",
-    "be",
-    "is",
-    "as",
-    "that",
-    "this",
-    "at",
-    "or",
-    "from",
-    "are",
-    "was",
-    "were",
-    "it",
-    "its",
-    "which",
-    "has",
-    "have",
-    "had",
-    "not",
-    "may",
-    "can",
-    "shall",
-    "will",
-    "such",
-}
+# Import necessary libraries
+import spacy
+import nltk
+from sklearn.feature_extraction.text import TfidfVectorizer
+from nltk.corpus import stopwords
+from nltk.tokenize import sent_tokenize
+import pandas as pd
+# Download required NLTK resources
+nltk.download('punkt')
+nltk.download('stopwords')
+# Load spaCy model
+nlp = spacy.load("en_core_web_sm")
 
 
-def normalize_text(legal_text: str) -> str:
-    """Normalize text for downstream heuristics."""
-    return legal_text.strip()
+def extract_entities(text):
+    """Extract named entities from legal text"""
+    doc = nlp(text)
+    entities = {}
+    
+    for ent in doc.ents:
+        if ent.label_ not in entities:
+            entities[ent.label_] = []
+        if ent.text not in entities[ent.label_]:
+            entities[ent.label_].append(ent.text)
+    
+    return entities
 
 
-def extract_entities(legal_text: str) -> dict:
-    """Lightweight entity extraction using regex heuristics."""
-    dates = re.findall(
-        r"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|"
-        r"Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|"
-        r"Nov(?:ember)?|Dec(?:ember)?)[\s.-]+\d{1,2},?\s+\d{4}\b",
-        legal_text,
-        flags=re.IGNORECASE,
-    )
-    amounts = re.findall(r"\$\s?\d[\d,]*(?:\.\d{2})?", legal_text)
-    sections = re.findall(r"\bSection\s+\d+(?:\.\d+)*", legal_text, flags=re.IGNORECASE)
-
-    # Capitalized word sequences as a simple proxy for party names or titles.
-    candidate_parties = re.findall(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b", legal_text)
-    parties = list({party for party in candidate_parties if len(party.split()) <= 5})
-
-    return {
-        "dates": sorted(set(dates)),
-        "amounts": sorted(set(amounts)),
-        "sections": sorted(set(sections)),
-        "parties": sorted(parties),
+def extract_key_sections(text):
+    """Identify key sections in a legal document"""
+    sections = {}
+    
+    # Common section patterns in legal documents
+    patterns = {
+        "definitions": r"(?i)(?:definitions|defined terms).*?(?=\n\n)",
+        "obligations": r"(?i)(?:obligations|responsibilities|shall).*?(?=\n\n)",
+        "termination": r"(?i)(?:termination|term|expiration).*?(?=\n\n)",
+        "governing_law": r"(?i)(?:governing law|jurisdiction).*?(?=\n\n)",
+        "warranties": r"(?i)(?:warranties|representations).*?(?=\n\n)"
     }
+    
+    for section_name, pattern in patterns.items():
+        matches = re.findall(pattern, text)
+        if matches:
+            sections[section_name] = matches
+    
+    return sections
 
-
-def extract_key_sections(legal_text: str) -> list:
-    """Surface likely key clauses by looking for known section keywords."""
-    key_sections = []
-    for keyword in SECTION_KEYWORDS:
-        if keyword in legal_text.lower():
-            # Grab a short snippet around the keyword for context.
-            match = re.search(
-                r".{0,60}" + re.escape(keyword) + r".{0,120}",
-                legal_text,
-                flags=re.IGNORECASE,
-            )
-            snippet = match.group(0) if match else keyword
-            key_sections.append(snippet.strip())
-    return key_sections
-
-
-def generate_summary(legal_text: str, max_sentences: int = 3) -> str:
-    """Simple frequency-based summarizer to keep things dependency-free."""
-    sentences = re.split(r"(?<=[.!?])\s+", legal_text)
-    sentences = [s.strip() for s in sentences if s.strip()]
-    if not sentences:
-        return ""
-    if len(sentences) <= max_sentences:
-        return " ".join(sentences)
-
-    words = re.findall(r"\b[a-zA-Z]+\b", legal_text.lower())
-    freq = Counter(w for w in words if w not in STOPWORDS)
-    if not freq:
-        return " ".join(sentences[:max_sentences])
-
-    scores = []
-    for idx, sentence in enumerate(sentences):
-        sentence_words = re.findall(r"\b[a-zA-Z]+\b", sentence.lower())
-        score = sum(freq.get(w, 0) for w in sentence_words)
-        scores.append((idx, score))
-
-    top_indices = sorted(scores, key=lambda x: x[1], reverse=True)[:max_sentences]
-    selected = sorted(idx for idx, _ in top_indices)
-    return " ".join(sentences[idx] for idx in selected)
+def generate_summary(text, ratio=0.2):
+    """Generate a summary of the legal document"""
+    sentences = sent_tokenize(text)
+    
+    # Create a TF-IDF vectorizer to find important sentences
+    vectorizer = TfidfVectorizer(stop_words=stopwords.words('english'))
+    tfidf_matrix = vectorizer.fit_transform(sentences)
+    
+    # Calculate the importance of each sentence
+    sentence_scores = tfidf_matrix.sum(axis=1).tolist()
+    
+    # Get the indices of the most important sentences
+    num_sentences = max(1, int(len(sentences) * ratio))
+    top_indices = sorted(range(len(sentence_scores)), 
+                          key=lambda i: sentence_scores[i], 
+                          reverse=True)[:num_sentences]
+    
+    # Sort indices to maintain original order
+    top_indices.sort()
+    
+    # Construct summary from top sentences
+    summary = " ".join([sentences[i] for i in top_indices])
+    
+    return summary
 
 
 @app.route("/", methods=["GET", "POST"])
